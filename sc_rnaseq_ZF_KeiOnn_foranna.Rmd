@@ -1,0 +1,553 @@
+---
+title: "ZF_microglia_juvenile_VS_adult (for Anna)"
+author: "Lai, Kei Onn (Barron Lab)"
+date: "12/26/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,eval = F)
+
+```
+read in the count matrix and metadata provided by GSE164772 on GEO
+
+dat is the count matrix
+```{r}
+library(Seurat)
+library(Matrix)
+# cells<100 genes not considered in analysis
+SO<-CreateSeuratObject(dat,min.features = 100)
+head(SO@meta.data)
+
+Juvenilemeta<-metadat[metadat$age=="Juvenile",]
+Adultmeta<-metadat[metadat$age=="Adult",]
+
+```
+
+```{r}
+
+Juvenilemeta<-metadat[metadat$age=="Juvenile",]
+Adultmeta<-metadat[metadat$age=="Adult",]
+length(grep(pattern = "-3",Adultmeta$cellID))==nrow(Adultmeta)
+
+length(grep(pattern = "-1",Juvenilemeta$cellID))==nrow(Juvenilemeta)
+Adultdat<-dat[,colnames(dat)%in%Adultmeta$X]
+all(colnames(Adultdat)==Adultmeta$X)
+
+Juveniledat<-dat[,colnames(dat)%in%Juvenilemeta$X]
+all(colnames(Juveniledat)==Juvenilemeta$X)
+AdultSO<-CreateSeuratObject(Adultdat,min.features = 100,project = "Adult")
+JuvenileSO<-CreateSeuratObject(Juveniledat,min.features = 100,project = "Juvenile")
+mergedSO<-merge(x = JuvenileSO,y = AdultSO, 
+                       add.cell.id = c("Juvenile", "Adult"))
+```
+
+write in metadata for UMI/RNA and mito ratio
+```{r}
+# Add number of genes per UMI for each cell to metadata
+mergedSO$log10GenesPerUMI <- log10(mergedSO$nFeature_RNA) / log10(mergedSO$nCount_RNA)
+
+mergedSO$mitoRatio <- PercentageFeatureSet(object = mergedSO, pattern = "^MT-")
+mergedSO$mitoRatio <- mergedSO@meta.data$mitoRatio / 100
+```
+
+```{r}
+metadata <- mergedSO@meta.data
+metadata$cells <- rownames(metadata)
+```
+
+Making sample col in metadata
+```{r}
+library(stringr)
+metadata$sample <- NA
+metadata$sample[which(str_detect(metadata$cells, "^Adult_"))] <- "Adult"
+metadata$sample[which(str_detect(metadata$cells, "^Juvenile_"))] <- "Juvenile"
+```
+
+Renaming cols as proposed by the HBC tutorial
+```{r}
+# Rename columns
+metadata <- metadata %>%
+        dplyr::rename(seq_folder = orig.ident,
+                      nUMI = nCount_RNA,
+                      nGene = nFeature_RNA)
+```
+
+```{r}
+# Add metadata back to Seurat object
+mergedSO@meta.data <- metadata
+                           
+# Create .RData object to load at any time
+save(mergedSO, file="ZF_GSE164772_sc_mergedseurat obj.RData")
+```
+QC the cells
+Visualize the number of cell counts per sample
+```{r}
+library(ggplot2)
+
+metadata %>% 
+  	ggplot(aes(x=sample, fill=sample)) + 
+  	geom_bar() +
+  	theme_classic() +
+  	theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("NCells")
+```
+Juvenile has 3x more cells than Adult
+
+
+
+Sequencing depth
+```{r}
+# Visualize the number UMIs/transcripts per cell
+metadata %>% 
+  	ggplot(aes(color=sample, x=nUMI, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	ylab("Cell density") +
+  	geom_vline(xintercept = 500)
+```
+
+
+Visualize the distribution of genes detected per cell via histogram
+Adult samples more genes/cell
+```{r}
+
+metadata %>% 
+  	ggplot(aes(color=sample, x=nGene, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	theme_classic() +
+  	scale_x_log10() + 
+  	geom_vline(xintercept = 300)
+```
+
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI (novelty score)
+generally needed >0.8 for better quality
+```{r}
+
+metadata %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = sample, fill=sample)) +
+  	geom_density(alpha = 0.2) +
+  	theme_classic() +
+  	geom_vline(xintercept = 0.8)
+```
+
+
+Visualize the distribution of mitochondrial gene expression detected per cell
+generally too high mito ratio= cells dying
+```{r}
+
+metadata %>% 
+  	ggplot(aes(color=sample, x=mitoRatio, fill=sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 0.2)
+```
+Visualize the correlation between genes detected and number of UMIs and determine whether strong presence of cells with low numbers of genes/UMIs
+
+
+```{r}
+metadata %>% 
+  	ggplot(aes(x=nUMI, y=nGene, color=mitoRatio)) + 
+  	geom_point() + 
+	scale_colour_gradient(low = "gray90", high = "black") +
+  	stat_smooth(method=lm) +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 500) +
+  	geom_hline(yintercept = 250) +
+  	facet_wrap(~sample)
+```
+ Filter out low quality cells using selected thresholds - these will change with experiment
+
+```{r}
+
+filtered_seurat <- subset(x = mergedSO, 
+                         subset= (nUMI >= 500) & 
+                           (nGene >= 250) & 
+                           (log10GenesPerUMI > 0.80) & 
+                           (mitoRatio < 0.20))
+			                          
+```
+Filter out genes that got zeros for all cells
+
+
+```{r}
+# Extract counts
+counts <- GetAssayData(object = filtered_seurat, slot = "counts")
+
+# Output a logical matrix specifying for each gene on whether or not there are more than zero counts per cell
+nonzero <- counts > 0
+
+# Sums all TRUE values and returns TRUE if more than 10 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+
+# Only keeping those genes expressed in more than 10 cells
+filtered_counts <- counts[keep_genes, ]
+# Reassign to filtered Seurat object
+filtered_seurat <- CreateSeuratObject(filtered_counts, meta.data = filtered_seurat@meta.data)
+
+# Create .RData object to load at any time
+save(filtered_seurat, file="seurat_filteredcells_GSE164772.RData")
+```
+Normalization
+
+simple log norm
+```{r}
+# Normalize the counts
+seurat_phase <- NormalizeData(filtered_seurat)
+```
+PCA
+
+we didnt regress out cell cycle and mito because we interested in mito protein and this is a developmental model
+```{r}
+# Identify the most variable genes
+seurat_phase <- FindVariableFeatures(seurat_phase, 
+                     selection.method = "vst",
+                     nfeatures = 2000, 
+                     verbose = FALSE)
+		     
+# Scale the counts
+seurat_phase <- ScaleData(seurat_phase)
+
+ #Perform PCA
+seurat_phase <- RunPCA(seurat_phase)
+
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by= "sample",
+        split.by = "sample")
+```
+Split seurat object by condition to perform  SCT 
+
+```{r}
+split_seurat <- SplitObject(seurat_phase, split.by = "sample")
+
+split_seurat <- split_seurat[c("Juvenile", "Adult")]
+
+options(future.globals.maxSize = 4000 * 1024^2)
+
+library(glmGamPoi)
+#V2 is used to compare adult vs juvenile
+for (i in 1:length(split_seurat)) {
+    split_seurat[[i]] <- SCTransform(split_seurat[[i]],vst.flavor = "v2", conserve.memory = TRUE)
+}
+
+# Save the split seurat object
+saveRDS(split_seurat, "SCTtrans_V2_split_seurat.rds")
+```
+
+```{r}
+# Select the most variable features to use for integration
+integ_features <- SelectIntegrationFeatures(object.list = split_seurat, 
+                                            nfeatures = 3000) 
+
+# Prepare the SCT list object for integration
+split_seurat <- PrepSCTIntegration(object.list = split_seurat, 
+                                   anchor.features = integ_features)
+
+
+integ_anchors <- FindIntegrationAnchors(object.list = split_seurat, 
+                                        normalization.method = "SCT", 
+                                        anchor.features = integ_features)
+
+# Integrate across conditions
+seurat_integrated <- IntegrateData(anchorset = integ_anchors, 
+                                   normalization.method = "SCT")
+```
+# Save integrated seurat object
+saveRDS(seurat_integrated, "integrated_seurat.rds")
+
+
+UMAP visualization
+```{r}
+
+seurat_integrated <- RunPCA(object = seurat_integrated)
+
+
+# Plot PCA
+PCAPlot(seurat_integrated,
+        split.by = "sample")
+seurat_integrated <- RunUMAP(seurat_integrated, 
+                             dims = 1:40,
+			     reduction = "pca")
+DimPlot(seurat_integrated)   
+DimPlot(seurat_integrated,
+        split.by = "sample")  
+
+
+
+DimPlot(seurat_integrated,
+        split.by = "sample")
+
+
+
+```
+save seurat_integrated as "seurat_int_UMAP_PCA.rds"
+```{r}
+saveRDS(seurat_integrated,file="seurat_int_UMAP_PCA.rds")
+
+rm(list=setdiff(ls(), "seurat_integrated"))
+```
+
+
+
+
+```{r}
+library(tidyverse)
+library(RCurl)
+library(cowplot)
+
+```
+
+
+ Explore heatmap of PCs determine which PC to use for clustering
+```{r}
+
+DimHeatmap(seurat_integrated, 
+           dims = 1:9, 
+           cells = 500, 
+           balanced = TRUE)
+```
+
+
+```{r}
+# Plot the elbow plot
+ElbowPlot(object = seurat_integrated, 
+          ndims = 40)
+```
+
+
+```{r}
+# Determine the K-nearest neighbor graph
+seurat_integrated <- FindNeighbors(object = seurat_integrated, 
+                                dims = 1:40)
+
+#Determine the clusters for various resolutions                                
+seurat_integrated <- FindClusters(object = seurat_integrated,
+                               resolution = seq(0,1,0.1))
+saveRDS(seurat_integrated,file="seurat_int_clusters.rds")
+```
+
+```{r}
+library(clustree)
+clustree(seurat_integrated, prefix = "integrated_snn_res.")
+```
+
+Choose 0.5 res
+
+```{r}
+library(dplyr)
+seurat_integrated@meta.data %>% 
+        View()
+
+# Assign identity of clusters
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.5"
+
+# Plot the UMAP
+DimPlot(seurat_integrated,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6)
+
+
+
+```
+
+```{r}
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells <- FetchData(seurat_integrated, 
+                     vars = c("ident", "orig.ident")) %>%
+        dplyr::count(ident, orig.ident) %>%
+        tidyr::spread(ident, n)
+
+# UMAP of cells in each cluster by sample
+DimPlot(seurat_integrated, 
+        label = TRUE, 
+        split.by = "sample")  + NoLegend()
+```
+
+```{r}
+# Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nUMI", "nGene", "mitoRatio")
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = metrics,
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+```{r}
+# Defining the information in the seurat object of interest
+columns <- c(paste0("PC_", 1:16),
+            "ident",
+            "UMAP_1", "UMAP_2")
+
+# Extracting this data from the seurat object
+pc_data <- FetchData(seurat_integrated, 
+                     vars = columns)
+
+# Extract the UMAP coordinates for the first 10 cells
+seurat_integrated@reductions$umap@cell.embeddings[1:10, 1:2]
+
+# Adding cluster label to center of cluster on UMAP
+umap_label <- FetchData(seurat_integrated, 
+                        vars = c("ident", "UMAP_1", "UMAP_2"))  %>%
+  group_by(ident) %>%
+  summarise(x=mean(UMAP_1), y=mean(UMAP_2))
+  
+
+  library(cowplot)
+library(purrr)
+library(ggplot2)
+# Plotting a UMAP plot for each of the PCs
+map(paste0("PC_", 1:16), function(pc){
+        ggplot(pc_data, 
+               aes(UMAP_1, UMAP_2)) +
+                geom_point(aes_string(color=pc), 
+                           alpha = 0.7) +
+                scale_color_gradient(guide = FALSE, 
+                                     low = "grey90", 
+                                     high = "blue")  +
+                geom_text(data=umap_label, 
+                          aes(label=ident, x, y)) +
+                ggtitle(pc)
+}) %>% 
+        plot_grid(plotlist = .)
+
+ #Examine PCA results 
+print(seurat_integrated[["pca"]], dims = 1:5, nfeatures = 5)
+```
+```{r}
+# Select the RNA counts slot to be the default assay
+DefaultAssay(seurat_integrated) <- "RNA"
+
+# Normalize RNA data for visualization purposes
+seurat_integrated <- NormalizeData(seurat_integrated, verbose = FALSE)
+
+
+
+featuresinterest<-FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = c("apoeb","mpeg1.1","p2ry12"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+Find markers for each cluster;
+we used FindConservedMarkers() as we have 2 diff sample type ; adult and juvenile 
+```{r}
+DefaultAssay(seurat_integrated) <- "RNA"
+
+
+conserved_markers <- map_dfr(c(0:16), get_conserved)
+```
+
+```{r}
+saveRDS(conserved_markers,file="allmarkerseachcluster.rds")
+write.csv(conserved_markers,file="allclustermarkers.csv")
+```
+
+```{r}
+tiff("violinplot_mgmarkers.tiff", units="cm", width=50, height=30, res=300)
+VlnPlot(seurat_integrated,features = c("apoeb","mpeg1.1","p2ry12"))
+dev.off()
+```
+
+```{r}
+library(AnnotationHub)
+library(ensembldb)
+# Connect to AnnotationHub
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism
+ahDb <- query(ah, 
+              pattern = c("Danio rerio", "EnsDb"), 
+              ignore.case = TRUE)
+
+
+
+# Acquire the latest annotation files
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database
+edb <- ah[[id]]
+
+# Extract gene-level information from database
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+```
+
+```{r}
+saveRDS(annotations,file="ZFannotaions_ensdb.rds")
+```
+
+
+```{r}
+mg_clusters<-FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = c("mpeg1.1", "apoeb", "p2ry12", "hexb", "csf1ra"),
+            label = TRUE, 
+            order = TRUE,
+            min.cutoff = 'q10',
+	    repel = TRUE
+            )
+
+tiff(filename="mg_clusters_scrnaseq_umap.tif",width=30, height=40,units="cm",res=300)
+mg_clusters
+dev.off()
+
+```
+
+we are only interested in microglia population
+```{r}
+seurat_integrated <- RenameIdents(object = seurat_integrated, 
+                               "0" = "Microglia1",
+                               "1" = "Microglia2",
+                               "3"= "Microglia3",
+                               "5"= "Microglia4",
+                               "7"="Microglia5",
+                               "8"="Microglia6",
+                               "14"="Microglia7")
+DimPlot(object = seurat_subset_labeled, 
+        reduction = "umap", 
+        label = TRUE,
+        label.size = 3,
+        repel = TRUE,
+        split.by="sample")
+
+seurat_subset_labeled <- subset(seurat_integrated,
+                               idents = c("Microglia1","Microglia2","Microglia3","Microglia4","Microglia5","Microglia6","Microglia7"), invert = F)
+saveRDS(seurat_subset_labeled,file="mgclusters_only_seuratint.rds")
+saveRDS(seurat_integrated,file="seurat_int_cluster_labelledmg.rds")
+```
+
+
+Find DE genes between Microglia2 and Microglia6;
+Microglia 4 and Microglia6
+
+```{r}
+cluster2vs6<-FindMarkers(seurat_subset_labeled, ident.1 = "Microglia2", ident.2 = "Microglia6")
+write.csv(cluster2vs6,file="cluster2vs6.csv")
+
+
+cluster4vs6<-FindMarkers(seurat_subset_labeled, ident.1 = "Microglia4", ident.2 = "Microglia6")
+write.csv(cluster4vs6,file="cluster4vs6.csv")
+
+
+```
+
