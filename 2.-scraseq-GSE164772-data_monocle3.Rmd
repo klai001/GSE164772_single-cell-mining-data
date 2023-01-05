@@ -1,0 +1,131 @@
+---
+title: "2. scrnaseq  GSE164772 data_monocle3"
+author: "Lai, Kei Onn (Barron Lab)"
+date: "1/5/2023"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(SeuratWrappers)
+library(Seurat)
+library(monocle3)
+library(SingleCellExperiment)
+```
+
+Here i read in the seurat object (mgclusters_only_seuratint.rds) from the previous analysis(1. Seurat_scrnaseq_GSE164772.Rmd) as "seurat.rds"
+seurat.rds thus contains only microglia population from GSE164772.
+Previously, using seurat,i identified 7 microglia populations.
+In this pipeline, we will use monocle3 for a trajectory anlaysis for these 7 microglia
+population in zebrafish.
+
+
+creating cell dataset object from seurat object using SeuratWrapper
+```{r}
+cds<-as.cell_data_set(seurat)
+#meta data
+colData(cds)
+```
+getting feature data aka the data of genes
+```{r}
+fData(cds)
+fData(cds)$gene_short_name<-rownames(fData(cds))
+fData(cds)
+# we added extra col of gene_short_name
+
+#getting counts
+counts(cds)[1:6,1:6]
+```
+
+
+For trajectory analysis, monocle3 needs cell embeddings of UMAP, partitions and the clusters. so, i used cluster_cells() from monocle3 to these information rather than using just seurat object.
+
+```{r}
+cds <- cluster_cells(cds, resolution=1e-3)
+
+p1 <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE)
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE)
+p1| p2
+
+integrated.sub <- subset(as.Seurat(cds, assay = NULL), monocle3_partitions == 1)
+cds <- as.cell_data_set(integrated.sub)
+cds <- learn_graph(cds, use_partition = TRUE, verbose = FALSE)
+
+trajplot<-plot_cells(cds,
+           color_cells_by = "cluster",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE)+theme(legend.position = "right")
+```
+
+
+```{r trajplot}
+
+
+trajplot
+```
+
+
+we know that microglia population 6 is proliferative microglia and likely to be the
+root of the pseudotime plot 
+```{r}
+cds <- order_cells(cds, root_cells = colnames(cds[,clusters(cds) == 6]))
+pseudot<-plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "cluster",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60")
+pseudot
+```
+Since cluster 3 is furthest from cluster 6,
+we do pairwise comparison
+
+```{r}
+cluster3vs6<-FindMarkers(seurat, ident.1 = "Microglia3", ident.2 = "Microglia6")
+head(cluster3vs6)
+
+```
+
+extracting genes that vary across the pseudotime
+```{r ,eval=F}
+cds_graph_test_results <- graph_test(cds,
+                                     neighbor_graph = "principal_graph",
+                                     cores = 8)
+#write.csv(cds_graph_test_results,"genes_vary_pseudotime.csv")
+
+rowData(cds)$gene_short_name <- row.names(rowData(cds))
+head(cds_graph_test_results, error=FALSE, message=FALSE, warning=FALSE)
+
+deg_ids <- rownames(subset(cds_graph_test_results[order(cds_graph_test_results$morans_I, decreasing = TRUE),], q_value < 0.05))
+
+topgenes_overlay_pseudo<-plot_cells(cds,
+           genes=head(deg_ids)),
+           show_trajectory_graph = F,
+           label_cell_groups = FALSE,
+           label_leaves = FALSE,
+           scale_to_range=T,
+           norm_method = "log")
+```
+
+plotting as a function of time,
+in this case, we are interested in the top few genes of deg_ids
+
+
+```{r}
+
+top_genes <- head(deg_ids)
+
+plot_pseudot<-plot_genes_in_pseudotime(top_genes,color_cells_by = "monocle3_clusters"
+                                   ,cell_size = 5)
+plot_pseudot
+```
+
+
