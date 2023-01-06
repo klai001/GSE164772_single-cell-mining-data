@@ -1,0 +1,119 @@
+---
+title: "monocle3_heatmap"
+author: "Lai, Kei Onn (Barron Lab)"
+date: "1/6/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(monocle3)
+library(monocle)
+```
+
+
+```{r}
+ genegrp<-read.csv(file="singlecellgrp.csv")
+genegrp=genegrp[!duplicated(genegrp$ï..ID),]
+rownames(genegrp)<-genegrp[,1]
+genegrp<-genegrp[,-1,drop=FALSE]
+```
+
+
+extracting pseudotime and clusters info
+```{r}
+cds<-learn_graph(cds,use_partition = TRUE, verbose = FALSE)
+colData(cds)$pseudotime <- pseudotime(cds,reduction_method = "UMAP")
+pseudotime<-data.frame(colData(cds)$pseudotime)
+clusters <- as.data.frame(cds@clusters@listData$UMAP$clusters)
+clusters$`cds@clusters@listData$UMAP$clusters`<-as.character(clusters$`cds@clusters@listData$UMAP$clusters`)
+
+```
+
+```{r}
+pt.matrix <-as.matrix(normalized_counts(cds,norm_method = "log")[,order(pseudotime(cds))])
+head(colnames(pt.matrix))
+
+head(row.names(pt.matrix))
+#Can also use "normalized_counts" instead of "exprs" to use various normalization methods, for example:
+#normalized_counts(cds, norm_method = "log")
+tpt.matrix<-pt.matrix[row.names(pt.matrix) %in% row.names(genegrp),]
+tpt.matrix <- t(apply(pt.matrix,1,function(x){smooth.spline(x,df=3)$y}))
+tpt.matrix <- t(apply(tpt.matrix,1,function(x){(x-mean(x))/sd(x)}))
+
+colnames(tpt.matrix)<-colnames(pt.matrix)
+
+
+#order clusters accordint to tpt.matrix pseudotime
+
+ann <- pseudotime
+
+
+
+#order ann according to the tpt.matrix pseudotime
+idx<-match(colnames(tpt.matrix),rownames(ann))
+ann$cells<-rownames(ann)
+ann<-ann[idx,]
+rownames(ann)=ann$cells
+ann=ann[,-2,drop=F]
+rownames(ann)==colnames(tpt.matrix)
+
+
+colnames(ann)="pseudotime"
+
+
+
+library(ComplexHeatmap)
+library(circlize)
+ha=HeatmapAnnotation(pseudotime=anno_lines(ann$pseudotime,gp = gpar(lwd=5,col="maroon")))
+
+```
+
+
+```{r}
+themecolors=list(themes=c("Glycolysis"="#33CCFF","TCA"="#66FF66","Oxidative Phosphorylation"="maroon","Microglia development"="purple"))
+
+heatmap=Heatmap(mat.counts.lpsy.fgsea, name = "Z-score counts", col = myCol,column_title = "%s",cluster_rows = FALSE,show_column_dend = FALSE,row_split = mygenecol2,column_split = my_sample_col,row_title_rot = 0,column_km = 1,
+                left_annotation = rowAnn,row_names_gp =gpar(fontsize=2))
+
+genegrp$cells=rownames(genegrp)
+genegrp2<-genegrp[genegrp$cells%in%row.names(tpt.matrix),]
+genegrp2<-genegrp2[,1,drop=F] #dropping the cells column
+
+#match row order of tpt.matrix to genes in genegrp2 
+
+idx<-match(rownames(genegrp2),rownames(tpt.matrix),)
+
+tpt.matrix<-tpt.matrix[idx, ]
+all(row.names(genegrp2)==row.names(tpt.matrix))
+
+#make row annotations and grouping
+rowAnn <- HeatmapAnnotation(df=genegrp2,which = "row",col=themecolors)
+
+hthc <- Heatmap(
+  tpt.matrix,
+  name                         = "z-score",
+  colorRamp2(seq(from=-2,to=2,length=11),rev(brewer.pal(11, "Spectral"))),
+  show_row_names               = TRUE,
+  show_column_names            = FALSE,
+  row_title_rot                = 0,
+  row_split = genegrp2,
+  left_annotation = rowAnn,row_names_gp =gpar(fontsize=10),
+  cluster_rows                 = F,
+  cluster_row_slices           = FALSE,
+  cluster_columns              = F,
+  column_title = "Heatmap genes as function of pseudotime",top_annotation = ha)
+
+
+tiff(filename="Heatmap_trajectory.tiff",width = 30,height=80,units = "cm",res = 400)
+hthc
+dev.off()
+
+```
+
+
+```
+
