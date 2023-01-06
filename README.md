@@ -14,4 +14,4 @@ but 2 sequencing lanes are used for J
 uvenile while 1 lane is used for adult zebrafish group.
 
 
-Trivia: I'm my PhD mentor's in-house bioinformatician. and this analysis was done because of her request.
+
